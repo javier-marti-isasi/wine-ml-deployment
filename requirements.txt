@@ -1,0 +1,6 @@
+# Dependencias de inferencia (imagen Docker)
+fastapi==0.115.12
+uvicorn==0.34.2
+pydantic==2.11.4
+catboost==1.2.8
+numpy==2.2.5

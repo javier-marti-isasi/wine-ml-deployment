@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+.vscode/
+data/*.csv
+artifacts/*.cbm
+artifacts/*.json

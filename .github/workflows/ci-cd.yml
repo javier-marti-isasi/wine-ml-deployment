@@ -1,0 +1,62 @@
+name: Wine ML - CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+      - name: Entrenar modelo (descarga UCI)
+        run: python -m scripts.train
+      - name: Unit tests e integration tests
+        run: python -m pytest -q
+      - name: Construir imagen Docker
+        run: docker build -t wine-ml-api:ci .
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ENABLE_AZURE_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # Azure OIDC (sin contrasenas en GitHub)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Instalar dependencias de entrenamiento
+        run: pip install -r requirements-dev.txt
+      - name: Generar artefactos del modelo
+        run: python -m scripts.train
+      - name: Login Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Instalar extensión Container Apps
+        run: az extension add --name containerapp --upgrade
+      - name: Construir, publicar y desplegar en Azure
+        run: |
+          az containerapp up \
+            --name wine-quality-api \
+            --resource-group rg-wine-ml-demo \
+            --environment env-wine-ml-demo \
+            --location westeurope \
+            --source . \
+            --ingress external \
+            --target-port 8000
