@@ -1,62 +1,123 @@
+
 name: Wine ML - CI/CD
 
 on:
   push:
     branches: [main]
+
   pull_request:
     branches: [main]
+
   workflow_dispatch:
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-      - name: Instalar dependencias
-        run: pip install -r requirements-dev.txt
-      - name: Entrenar modelo (descarga UCI)
-        run: python -m scripts.train
-      - name: Unit tests e integration tests
-        run: python -m pytest -q
-      - name: Construir imagen Docker
-        run: docker build -t wine-ml-api:ci .
+permissions:
+  contents: read
+  id-token: write
 
-  deploy:
-    needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ENABLE_AZURE_DEPLOY == 'true'
+env:
+  ACR_NAME: wineacr12345
+  IMAGE_NAME: wine-ml-api
+  RESOURCE_GROUP: rg-wine-ml-demo
+  CONTAINER_APP_NAME: wine-quality-api
+
+jobs:
+  build-test-deploy:
+    name: Train, Test, Build and Deploy
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write   # Azure OIDC (sin contrasenas en GitHub)
-      contents: read
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # 1. Descargar codigo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Preparar Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
-      - name: Instalar dependencias de entrenamiento
-        run: pip install -r requirements-dev.txt
-      - name: Generar artefactos del modelo
-        run: python -m scripts.train
-      - name: Login Azure (OIDC)
+          python-version: "3.11"
+          cache: pip
+
+      # 3. Instalar dependencias
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # 4. Entrenar modelo
+      - name: Train model
+        run: |
+          python -m scripts.train
+
+      # 5. Ejecutar tests
+      - name: Run tests
+        run: |
+          python -m pytest -v
+
+      # 6. Construir imagen Docker
+      - name: Build Docker image
+        run: |
+          docker build -t wine-ml-api:test .
+
+      # Los siguientes pasos solo se ejecutan
+      # en main si habilitamos el despliegue.
+
+      # 7. Autenticacion en Azure usando OIDC
+      - name: Azure Login
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main' &&
+          vars.ENABLE_AZURE_DEPLOY == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Instalar extensión Container Apps
-        run: az extension add --name containerapp --upgrade
-      - name: Construir, publicar y desplegar en Azure
+
+      # 8. Publicar nueva imagen en ACR
+      - name: Push image to Azure Container Registry
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main' &&
+          vars.ENABLE_AZURE_DEPLOY == 'true'
+        shell: bash
         run: |
-          az containerapp up \
-            --name wine-quality-api \
-            --resource-group rg-wine-ml-demo \
-            --environment env-wine-ml-demo \
-            --location westeurope \
-            --source . \
-            --ingress external \
-            --target-port 8000
+          ACR_SERVER=$(az acr show \
+            --name "$ACR_NAME" \
+            --query loginServer \
+            --output tsv)
+
+          az acr login --name "$ACR_NAME"
+
+          docker tag wine-ml-api:test \
+            "$ACR_SERVER/$IMAGE_NAME:${GITHUB_SHA}"
+
+          docker push \
+            "$ACR_SERVER/$IMAGE_NAME:${GITHUB_SHA}"
+
+          echo "IMAGE_URI=$ACR_SERVER/$IMAGE_NAME:${GITHUB_SHA}" \
+            >> "$GITHUB_ENV"
+
+      # 9. Actualizar Azure Container App
+      - name: Deploy to Azure Container Apps
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main' &&
+          vars.ENABLE_AZURE_DEPLOY == 'true'
+        run: |
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_URI"
+
+      # 10. Comprobar el estado del despliegue
+      - name: Show deployed revision
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == 'refs/heads/main' &&
+          vars.ENABLE_AZURE_DEPLOY == 'true'
+        run: |
+          az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "{revision:properties.latestRevisionName, fqdn:properties.configuration.ingress.fqdn}" \
+            --output json
