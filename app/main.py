@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
 # Configuración de la aplicación FastAPI
 app = FastAPI(
     title="Wine Quality ML API",
-    version="1.0.0",
+    version="1.0.1",
     description="Clasificación binaria: quality >= 6 sobre el dataset Wine Quality (UCI).",
     lifespan=lifespan,
 )
